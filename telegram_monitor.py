@@ -28,8 +28,6 @@ class Settings(BaseSettings):
     working_hours_end: int = 21
     response_timeout_hours: int = 2
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
-    log_file: str = "telegram_monitor.log"
-    log_rotation: str = "10 MB"
 
     @property
     def working_hours(self) -> tuple[int, int]:
@@ -38,18 +36,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-
-# ============================================================================
-# НАСТРОЙКА ЛОГИРОВАНИЯ
-# ============================================================================
-
-logger.add(
-    settings.log_file,
-    rotation=settings.log_rotation,
-    retention="1 month",
-    level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
-)
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
