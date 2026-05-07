@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     report_to: str = "@victorryakh"
     working_hours_start: int = 9
     working_hours_end: int = 21
-    response_timeout_hours: int = 2
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
     report_type: Literal["unread", "all", "leaderboard_response"] = "all"
     leaderboard_response_list_count: int = 10
