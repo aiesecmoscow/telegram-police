@@ -128,6 +128,7 @@ crontab -e
 | `WORKING_HOURS_END` | | `21` | Конец рабочего дня (часы) |
 | `RESPONSE_TIMEOUT_HOURS` | | `2` | Порог без ответа (рабочих часов) |
 | `EXCLUDED_CHATS` | | `["@PremiumBot","@SpamBot"]` | JSON-список исключённых чатов |
+| `REPORT_TYPE` | | `all` | Тип отчёта: `unread` — только непрочитанные; `all` — непрочитанные и неотвеченные |
 
 ### Примеры `EXCLUDED_CHATS`
 

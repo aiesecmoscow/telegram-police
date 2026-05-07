@@ -6,7 +6,7 @@ Telegram Monitor Script
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple, Optional
+from typing import List, Literal, Tuple, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from telethon import TelegramClient
 from telethon.tl.types import User, Chat, Channel, Message
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     working_hours_end: int = 21
     response_timeout_hours: int = 2
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
+    report_type: Literal["unread", "all"] = "all"
 
     @property
     def working_hours(self) -> tuple[int, int]:
@@ -258,6 +259,7 @@ async def monitor_chats():
     #     logger.info(f"Текущее время вне рабочих часов ({settings.working_hours[0]}:00 - {settings.working_hours[1]}:00). Завершение работы.")
     #     return
 
+    logger.info(f"Режим отчёта: {settings.report_type}")
     logger.info(f"Рабочее время. Начинаем проверку чатов...")
 
     # Создание клиента с сессией
@@ -306,7 +308,7 @@ async def monitor_chats():
 
             if unread_info:
                 unread_list.append(unread_info)
-            if unanswered_info:
+            if unanswered_info and settings.report_type == "all":
                 unanswered_list.append(unanswered_info)
 
             checked_count += 1
@@ -377,6 +379,7 @@ async def send_report(client: TelegramClient, unread_list: List[str], unanswered
                 report_lines.append(f"💬 НЕОТВЕЧЕННЫЕ СООБЩЕНИЯ ({len(unanswered_list)}):\n")
                 for item in unanswered_list:
                     report_lines.append(f"• {item}\n")
+                report_lines.append("\nЧтобы сообщения не считались неотвеченными — ставь реакцию в конце сообщения собеседника")
 
         # Отправка отчета чанками
         report_chunks = build_chunks(report_lines, max_message_length)
