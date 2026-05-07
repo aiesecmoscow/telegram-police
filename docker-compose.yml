@@ -1,0 +1,7 @@
+services:
+  telegram-police:
+    build: .
+    env_file: .env
+    volumes:
+      - ./session.session:/app/session.session
+    restart: unless-stopped
