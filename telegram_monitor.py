@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     working_hours_end: int = 21
     response_timeout_hours: int = 2
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
-    report_type: Literal["unread", "all"] = "all"
+    report_type: Literal["unread", "all", "leaderboard_response"] = "all"
+    leaderboard_response_list_count: int = 10
+    leaderboard_response_messages_count: int = 100
 
     @property
     def working_hours(self) -> tuple[int, int]:
@@ -115,6 +117,15 @@ def is_working_hours(current_time: datetime, working_hours: Tuple[int, int]) -> 
     return start_hour <= current_time.hour < end_hour
 
 
+def format_duration(hours: float) -> str:
+    total_minutes = int(hours * 60)
+    h = total_minutes // 60
+    m = total_minutes % 60
+    if h > 0:
+        return f"{h}ч {m}м"
+    return f"{m}м"
+
+
 def get_color_indicator(working_hours: float) -> str:
     if working_hours < 2:
         return "🔵"
@@ -180,6 +191,47 @@ async def has_our_reaction(message: Message, client: TelegramClient) -> bool:
 # ============================================================================
 # ОСНОВНАЯ ЛОГИКА
 # ============================================================================
+
+async def calculate_chat_avg_response_time(dialog, client: TelegramClient, me) -> Optional[Tuple[str, float]]:
+    """
+    Считает среднее рабочее время ответа менеджера за последние N сообщений чата.
+
+    Returns:
+        (chat_name, avg_working_hours) или None, если пар «вопрос→ответ» нет.
+    """
+    try:
+        entity = dialog.entity
+        chat_name = format_chat_name(entity)
+
+        messages = await client.get_messages(entity, limit=settings.leaderboard_response_messages_count)
+        if not messages:
+            return None
+
+        # Сортируем от старых к новым
+        messages_sorted = sorted(messages, key=lambda m: m.date)
+
+        response_times: List[float] = []
+        for i, msg in enumerate(messages_sorted):
+            if msg.sender_id == me.id:
+                continue  # сообщение от нас — не начало пары
+            # Ищем следующий ответ менеджера
+            for j in range(i + 1, len(messages_sorted)):
+                next_msg = messages_sorted[j]
+                if next_msg.sender_id == me.id:
+                    hours = calculate_working_hours_passed(msg.date, next_msg.date, settings.working_hours)
+                    response_times.append(hours)
+                    break
+
+        if not response_times:
+            return None
+
+        avg_hours = sum(response_times) / len(response_times)
+        return (chat_name, avg_hours)
+
+    except Exception as e:
+        logger.error(f"Ошибка при расчёте времени ответа для {dialog.name}: {e}")
+        return None
+
 
 async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -> Tuple[Optional[Tuple[str, float]], Optional[Tuple[str, float]]]:
     """
@@ -254,6 +306,38 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
         return None, None
 
 
+async def send_leaderboard_response_report(client: TelegramClient, leaderboard: List[Tuple[str, float]]):
+    """
+    Отправляет топ переписок по скорости ответа менеджера.
+    """
+    try:
+        now_str = datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')
+        lines: List[str] = []
+        lines.append(
+            f"🏆 ТОП-{settings.leaderboard_response_list_count} ПЕРЕПИСОК ПО СКОРОСТИ ОТВЕТА МЕНЕДЖЕРА\n"
+            f"(за последние {settings.leaderboard_response_messages_count} сообщений, {now_str})\n\n"
+        )
+
+        medals = ["🥇", "🥈", "🥉"]
+        for rank, (chat_name, avg_hours) in enumerate(leaderboard, start=1):
+            icon = medals[rank - 1] if rank <= 3 else f"{rank}."
+            lines.append(f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)}\n")
+
+        if not leaderboard:
+            lines.append("Недостаточно данных для формирования топа.")
+
+        report = "".join(lines)
+        # Разбиваем на чанки если нужно
+        max_len = 4000
+        chunks = [report[i:i + max_len] for i in range(0, len(report), max_len)]
+        for index, chunk in enumerate(chunks, start=1):
+            await client.send_message(settings.report_to, chunk)
+            logger.info(f"Топ ответов отправлен пользователю {settings.report_to} (часть {index}/{len(chunks)})")
+
+    except Exception as e:
+        logger.error(f"Ошибка при отправке топа ответов: {e}", exc_info=True)
+
+
 async def monitor_chats():
     """
     Основная функция мониторинга чатов.
@@ -289,6 +373,7 @@ async def monitor_chats():
 
         unread_list: List[Tuple[str, float]] = []
         unanswered_list: List[Tuple[str, float]] = []
+        leaderboard_list: List[Tuple[str, float]] = []
 
         checked_count = 0
 
@@ -314,26 +399,39 @@ async def monitor_chats():
                 logger.debug(f"Пропуск исключенного чата: {format_chat_name(entity)}")
                 continue
 
-            # Анализ чата
-            unread_info, unanswered_info = await analyze_chat(dialog, client, current_time)
+            if settings.report_type == "leaderboard_response":
+                result = await calculate_chat_avg_response_time(dialog, client, me)
+                if result is not None:
+                    leaderboard_list.append(result)
+            else:
+                # Анализ чата
+                unread_info, unanswered_info = await analyze_chat(dialog, client, current_time)
 
-            if unread_info:
-                unread_list.append(unread_info)
-            if unanswered_info and settings.report_type == "all":
-                unanswered_list.append(unanswered_info)
+                if unread_info:
+                    unread_list.append(unread_info)
+                if unanswered_info and settings.report_type == "all":
+                    unanswered_list.append(unanswered_info)
 
             checked_count += 1
 
-        # Сортировка по убыванию просроченного времени (самые старые — первыми)
-        unread_list.sort(key=lambda x: x[1], reverse=True)
-        unanswered_list.sort(key=lambda x: x[1], reverse=True)
-
         logger.info(f"Проверено чатов: {checked_count}")
-        logger.info(f"Найдено непрочитанных: {len(unread_list)}")
-        logger.info(f"Найдено неотвеченных: {len(unanswered_list)}")
 
-        # Формирование и отправка сводки
-        await send_report(client, unread_list, unanswered_list)
+        if settings.report_type == "leaderboard_response":
+            # Сортируем по возрастанию среднего времени ответа (быстрые — первыми)
+            leaderboard_list.sort(key=lambda x: x[1])
+            top = leaderboard_list[:settings.leaderboard_response_list_count]
+            logger.info(f"Топ переписок по скорости ответа: {len(top)} из {len(leaderboard_list)}")
+            await send_leaderboard_response_report(client, top)
+        else:
+            # Сортировка по убыванию просроченного времени (самые старые — первыми)
+            unread_list.sort(key=lambda x: x[1], reverse=True)
+            unanswered_list.sort(key=lambda x: x[1], reverse=True)
+
+            logger.info(f"Найдено непрочитанных: {len(unread_list)}")
+            logger.info(f"Найдено неотвеченных: {len(unanswered_list)}")
+
+            # Формирование и отправка сводки
+            await send_report(client, unread_list, unanswered_list)
 
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
