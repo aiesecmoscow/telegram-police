@@ -4,4 +4,4 @@ services:
     env_file: .env
     volumes:
       - ./session.session:/app/session.session
-    restart: unless-stopped
+    restart: no
