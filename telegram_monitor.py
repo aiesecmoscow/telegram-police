@@ -115,6 +115,15 @@ def is_working_hours(current_time: datetime, working_hours: Tuple[int, int]) -> 
     return start_hour <= current_time.hour < end_hour
 
 
+def get_color_indicator(working_hours: float) -> str:
+    if working_hours < 2:
+        return "🔵"
+    elif working_hours < 4:
+        return "🟡"
+    else:
+        return "🔴"
+
+
 def format_chat_name(entity) -> str:
     """
     Форматирует имя чата для отображения в отчете.
@@ -172,7 +181,7 @@ async def has_our_reaction(message: Message, client: TelegramClient) -> bool:
 # ОСНОВНАЯ ЛОГИКА
 # ============================================================================
 
-async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -> Tuple[Optional[str], Optional[str]]:
+async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -> Tuple[Optional[Tuple[str, float]], Optional[Tuple[str, float]]]:
     """
     Анализирует чат на наличие непрочитанных или неотвеченных сообщений.
 
@@ -213,10 +222,11 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
                     current_time,
                     settings.working_hours
                 )
-
-                if working_hours_passed >= settings.response_timeout_hours:
-                    unread_info = f"{chat_name} - {dialog.unread_count} непрочитанных, первое от {first_unread.date.strftime('%d.%m.%Y %H:%M')}"
-                    logger.warning(f"Непрочитанные сообщения: {unread_info}")
+                unread_info = (
+                    f"{chat_name} - {dialog.unread_count} непрочитанных, первое от {first_unread.date.strftime('%d.%m.%Y %H:%M')}",
+                    working_hours_passed,
+                )
+                logger.warning(f"Непрочитанные сообщения: {unread_info[0]}")
 
         # Проверка неотвеченных сообщений
         if is_from_client:
@@ -225,16 +235,17 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
                 current_time,
                 settings.working_hours
             )
+            # Проверяем наличие реакции
+            has_reaction = await has_our_reaction(last_message, client)
 
-            if working_hours_passed >= settings.response_timeout_hours:
-                # Проверяем наличие реакции
-                has_reaction = await has_our_reaction(last_message, client)
-
-                if not has_reaction:
-                    unanswered_info = f"{chat_name} - последнее сообщение от {last_message.date.strftime('%d.%m.%Y %H:%M')}"
-                    logger.warning(f"Неотвеченное сообщение: {unanswered_info}")
-                else:
-                    logger.info(f"Сообщение от {chat_name} имеет реакцию, пропускаем")
+            if not has_reaction:
+                unanswered_info = (
+                    f"{chat_name} - последнее сообщение от {last_message.date.strftime('%d.%m.%Y %H:%M')}",
+                    working_hours_passed,
+                )
+                logger.warning(f"Неотвеченное сообщение: {unanswered_info[0]}")
+            else:
+                logger.info(f"Сообщение от {chat_name} имеет реакцию, пропускаем")
 
         return unread_info, unanswered_info
 
@@ -276,8 +287,8 @@ async def monitor_chats():
         dialogs = await client.get_dialogs()
         logger.info(f"Получено диалогов: {len(dialogs)}")
 
-        unread_list = []
-        unanswered_list = []
+        unread_list: List[Tuple[str, float]] = []
+        unanswered_list: List[Tuple[str, float]] = []
 
         checked_count = 0
 
@@ -313,6 +324,10 @@ async def monitor_chats():
 
             checked_count += 1
 
+        # Сортировка по убыванию просроченного времени (самые старые — первыми)
+        unread_list.sort(key=lambda x: x[1], reverse=True)
+        unanswered_list.sort(key=lambda x: x[1], reverse=True)
+
         logger.info(f"Проверено чатов: {checked_count}")
         logger.info(f"Найдено непрочитанных: {len(unread_list)}")
         logger.info(f"Найдено неотвеченных: {len(unanswered_list)}")
@@ -328,7 +343,7 @@ async def monitor_chats():
         logger.info("Отключение от Telegram")
 
 
-async def send_report(client: TelegramClient, unread_list: List[str], unanswered_list: List[str]):
+async def send_report(client: TelegramClient, unread_list: List[Tuple[str, float]], unanswered_list: List[Tuple[str, float]]):
     """
     Отправляет сводку по чатам указанному пользователю.
 
@@ -371,14 +386,16 @@ async def send_report(client: TelegramClient, unread_list: List[str], unanswered
 
             if unread_list:
                 report_lines.append(f"📬 НЕПРОЧИТАННЫЕ СООБЩЕНИЯ ({len(unread_list)}):\n")
-                for item in unread_list:
-                    report_lines.append(f"• {item}\n")
+                for text, hours in unread_list:
+                    color = get_color_indicator(hours)
+                    report_lines.append(f"{color} {text}\n")
                 report_lines.append("\n")
 
             if unanswered_list:
                 report_lines.append(f"💬 НЕОТВЕЧЕННЫЕ СООБЩЕНИЯ ({len(unanswered_list)}):\n")
-                for item in unanswered_list:
-                    report_lines.append(f"• {item}\n")
+                for text, hours in unanswered_list:
+                    color = get_color_indicator(hours)
+                    report_lines.append(f"{color} {text}\n")
                 report_lines.append("\nЧтобы сообщения не считались неотвеченными — ставь реакцию в конце сообщения собеседника")
 
         # Отправка отчета чанками
