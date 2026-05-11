@@ -6,7 +6,8 @@ Telegram Monitor Script
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Literal, Tuple, Optional
+from typing import List, Tuple, Optional
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from telethon import TelegramClient
 from telethon.tl.types import User, Chat, Channel, Message
@@ -16,6 +17,9 @@ from loguru import logger
 # ============================================================================
 # КОНФИГУРАЦИЯ
 # ============================================================================
+
+VALID_REPORT_TYPES = {"unread", "unanswered", "leaderboard"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
@@ -27,9 +31,20 @@ class Settings(BaseSettings):
     working_hours_start: int = 9
     working_hours_end: int = 21
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
-    report_type: Literal["unread", "all", "leaderboard_response"] = "all"
+    report_types: list[str] = ["unread", "unanswered"]
     leaderboard_response_list_count: int = 10
     leaderboard_response_messages_count: int = 100
+
+    @field_validator("report_types", mode="before")
+    @classmethod
+    def parse_report_types(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            v = [item.strip() for item in v.split(",") if item.strip()]
+        if isinstance(v, list):
+            unknown = set(v) - VALID_REPORT_TYPES
+            if unknown:
+                raise ValueError(f"Неизвестные типы отчётов: {unknown}. Допустимые: {VALID_REPORT_TYPES}")
+        return v
 
     @property
     def working_hours(self) -> tuple[int, int]:
@@ -305,10 +320,61 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
         return None, None
 
 
-async def send_leaderboard_response_report(client: TelegramClient, leaderboard: List[Tuple[str, float]]):
-    """
-    Отправляет топ переписок по скорости ответа менеджера.
-    """
+async def _send_chunks(client: TelegramClient, lines: List[str], label: str) -> None:
+    max_len = 4000
+    chunks: List[str] = []
+    current: List[str] = []
+    current_length = 0
+    for line in lines:
+        if current and current_length + len(line) > max_len:
+            chunks.append("".join(current))
+            current = [line]
+            current_length = len(line)
+        else:
+            current.append(line)
+            current_length += len(line)
+    if current:
+        chunks.append("".join(current))
+
+    for index, chunk in enumerate(chunks, start=1):
+        await client.send_message(settings.report_to, chunk)
+        logger.info(f"{label} отправлен(а) {settings.report_to} (часть {index}/{len(chunks)})")
+
+
+async def send_unread_report(client: TelegramClient, unread_list: List[Tuple[str, float]]) -> None:
+    try:
+        now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
+        lines: List[str] = []
+        if unread_list:
+            lines.append(f"📬 НЕПРОЧИТАННЫЕ СООБЩЕНИЯ ({len(unread_list)}) — {now_str}\n\n")
+            for text, hours in unread_list:
+                lines.append(f"{get_color_indicator(hours)} {text}\n")
+        else:
+            lines.append(f"✅ Непрочитанных сообщений нет — {now_str}\n")
+            logger.info("Непрочитанных сообщений не найдено")
+        await _send_chunks(client, lines, "Отчёт по непрочитанным")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке отчёта по непрочитанным: {e}", exc_info=True)
+
+
+async def send_unanswered_report(client: TelegramClient, unanswered_list: List[Tuple[str, float]]) -> None:
+    try:
+        now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
+        lines: List[str] = []
+        if unanswered_list:
+            lines.append(f"💬 НЕОТВЕЧЕННЫЕ СООБЩЕНИЯ ({len(unanswered_list)}) — {now_str}\n\n")
+            for text, hours in unanswered_list:
+                lines.append(f"{get_color_indicator(hours)} {text}\n")
+            lines.append("\nЧтобы сообщения не считались неотвеченными — ставь реакцию в конце сообщения собеседника")
+        else:
+            lines.append(f"✅ Неотвеченных сообщений нет — {now_str}\n")
+            logger.info("Неотвеченных сообщений не найдено")
+        await _send_chunks(client, lines, "Отчёт по неотвеченным")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке отчёта по неотвеченным: {e}", exc_info=True)
+
+
+async def send_leaderboard_report(client: TelegramClient, leaderboard: List[Tuple[str, float]]) -> None:
     try:
         now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
         lines: List[str] = []
@@ -316,23 +382,14 @@ async def send_leaderboard_response_report(client: TelegramClient, leaderboard: 
             f"🏆 ТОП-{settings.leaderboard_response_list_count} ПЕРЕПИСОК ПО СКОРОСТИ ОТВЕТА МЕНЕДЖЕРА\n"
             f"(за последние {settings.leaderboard_response_messages_count} сообщений, {now_str})\n\n"
         )
-
-        medals = ["🥇", "🥈", "🥉"]
-        for rank, (chat_name, avg_hours) in enumerate(leaderboard, start=1):
-            icon = medals[rank - 1] if rank <= 3 else f"{rank}."
-            lines.append(f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)}\n")
-
-        if not leaderboard:
+        if leaderboard:
+            medals = ["🥇", "🥈", "🥉"]
+            for rank, (chat_name, avg_hours) in enumerate(leaderboard, start=1):
+                icon = medals[rank - 1] if rank <= 3 else f"{rank}."
+                lines.append(f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)}\n")
+        else:
             lines.append("Недостаточно данных для формирования топа.")
-
-        report = "".join(lines)
-        # Разбиваем на чанки если нужно
-        max_len = 4000
-        chunks = [report[i:i + max_len] for i in range(0, len(report), max_len)]
-        for index, chunk in enumerate(chunks, start=1):
-            await client.send_message(settings.report_to, chunk)
-            logger.info(f"Топ ответов отправлен пользователю {settings.report_to} (часть {index}/{len(chunks)})")
-
+        await _send_chunks(client, lines, "Топ ответов")
     except Exception as e:
         logger.error(f"Ошибка при отправке топа ответов: {e}", exc_info=True)
 
@@ -353,7 +410,7 @@ async def monitor_chats():
     #     logger.info(f"Текущее время вне рабочих часов ({settings.working_hours[0]}:00 - {settings.working_hours[1]}:00). Завершение работы.")
     #     return
 
-    logger.info(f"Режим отчёта: {settings.report_type}")
+    logger.info(f"Типы отчётов: {', '.join(settings.report_types)}")
     logger.info(f"Рабочее время. Начинаем проверку чатов...")
 
     # Создание клиента с сессией
@@ -369,6 +426,11 @@ async def monitor_chats():
         # Получение всех диалогов
         dialogs = await client.get_dialogs()
         logger.info(f"Получено диалогов: {len(dialogs)}")
+
+        need_unread = "unread" in settings.report_types
+        need_unanswered = "unanswered" in settings.report_types
+        need_leaderboard = "leaderboard" in settings.report_types
+        need_chat_analysis = need_unread or need_unanswered
 
         unread_list: List[Tuple[str, float]] = []
         unanswered_list: List[Tuple[str, float]] = []
@@ -398,39 +460,37 @@ async def monitor_chats():
                 logger.debug(f"Пропуск исключенного чата: {format_chat_name(entity)}")
                 continue
 
-            if settings.report_type == "leaderboard_response":
+            if need_leaderboard:
                 result = await calculate_chat_avg_response_time(dialog, client, me)
                 if result is not None:
                     leaderboard_list.append(result)
-            else:
-                # Анализ чата
-                unread_info, unanswered_info = await analyze_chat(dialog, client, current_time)
 
-                if unread_info:
+            if need_chat_analysis:
+                unread_info, unanswered_info = await analyze_chat(dialog, client, current_time)
+                if need_unread and unread_info:
                     unread_list.append(unread_info)
-                if unanswered_info and settings.report_type == "all":
+                if need_unanswered and unanswered_info:
                     unanswered_list.append(unanswered_info)
 
             checked_count += 1
 
         logger.info(f"Проверено чатов: {checked_count}")
 
-        if settings.report_type == "leaderboard_response":
-            # Сортируем по возрастанию среднего времени ответа (быстрые — первыми)
+        if need_unread:
+            unread_list.sort(key=lambda x: x[1], reverse=True)
+            logger.info(f"Найдено непрочитанных: {len(unread_list)}")
+            await send_unread_report(client, unread_list)
+
+        if need_unanswered:
+            unanswered_list.sort(key=lambda x: x[1], reverse=True)
+            logger.info(f"Найдено неотвеченных: {len(unanswered_list)}")
+            await send_unanswered_report(client, unanswered_list)
+
+        if need_leaderboard:
             leaderboard_list.sort(key=lambda x: x[1])
             top = leaderboard_list[:settings.leaderboard_response_list_count]
             logger.info(f"Топ переписок по скорости ответа: {len(top)} из {len(leaderboard_list)}")
-            await send_leaderboard_response_report(client, top)
-        else:
-            # Сортировка по убыванию просроченного времени (самые старые — первыми)
-            unread_list.sort(key=lambda x: x[1], reverse=True)
-            unanswered_list.sort(key=lambda x: x[1], reverse=True)
-
-            logger.info(f"Найдено непрочитанных: {len(unread_list)}")
-            logger.info(f"Найдено неотвеченных: {len(unanswered_list)}")
-
-            # Формирование и отправка сводки
-            await send_report(client, unread_list, unanswered_list)
+            await send_leaderboard_report(client, top)
 
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
@@ -438,71 +498,6 @@ async def monitor_chats():
     finally:
         await client.disconnect()
         logger.info("Отключение от Telegram")
-
-
-async def send_report(client: TelegramClient, unread_list: List[Tuple[str, float]], unanswered_list: List[Tuple[str, float]]):
-    """
-    Отправляет сводку по чатам указанному пользователю.
-
-    Args:
-        client: Клиент Telegram
-        unread_list: Список непрочитанных чатов
-        unanswered_list: Список неотвеченных чатов
-    """
-    try:
-        max_message_length = 4000
-
-        def build_chunks(lines: List[str], limit: int) -> List[str]:
-            chunks: List[str] = []
-            current: List[str] = []
-            current_length = 0
-
-            for line in lines:
-                line_length = len(line)
-                if current and current_length + line_length > limit:
-                    chunks.append("".join(current))
-                    current = [line]
-                    current_length = line_length
-                else:
-                    current.append(line)
-                    current_length += line_length
-
-            if current:
-                chunks.append("".join(current))
-
-            return chunks
-
-        # Формирование отчета
-        report_lines: List[str] = []
-        if not unread_list and not unanswered_list:
-            report_lines.append(f"✅ Сводка по чатам ({datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')})\n\n")
-            report_lines.append("Все чаты обработаны. Проблем не обнаружено.")
-            logger.info("Проблемных чатов не найдено")
-        else:
-            report_lines.append(f"⚠️ Сводка по чатам ({datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')})\n\n")
-
-            if unread_list:
-                report_lines.append(f"📬 НЕПРОЧИТАННЫЕ СООБЩЕНИЯ ({len(unread_list)}):\n")
-                for text, hours in unread_list:
-                    color = get_color_indicator(hours)
-                    report_lines.append(f"{color} {text}\n")
-                report_lines.append("\n")
-
-            if unanswered_list:
-                report_lines.append(f"💬 НЕОТВЕЧЕННЫЕ СООБЩЕНИЯ ({len(unanswered_list)}):\n")
-                for text, hours in unanswered_list:
-                    color = get_color_indicator(hours)
-                    report_lines.append(f"{color} {text}\n")
-                report_lines.append("\nЧтобы сообщения не считались неотвеченными — ставь реакцию в конце сообщения собеседника")
-
-        # Отправка отчета чанками
-        report_chunks = build_chunks(report_lines, max_message_length)
-        for index, chunk in enumerate(report_chunks, start=1):
-            await client.send_message(settings.report_to, chunk)
-            logger.info(f"Сводка отправлена пользователю {settings.report_to} (часть {index}/{len(report_chunks)})")
-
-    except Exception as e:
-        logger.error(f"Ошибка при отправке сводки: {e}", exc_info=True)
 
 
 # ============================================================================
