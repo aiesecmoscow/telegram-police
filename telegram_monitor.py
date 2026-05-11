@@ -5,7 +5,7 @@ Telegram Monitor Script
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import List, Literal, Tuple, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from telethon import TelegramClient
@@ -217,7 +217,7 @@ async def calculate_chat_avg_response_time(dialog, client: TelegramClient, me) -
             for j in range(i + 1, len(messages_sorted)):
                 next_msg = messages_sorted[j]
                 if next_msg.sender_id == me.id:
-                    hours = calculate_working_hours_passed(msg.date, next_msg.date, settings.working_hours)
+                    hours = calculate_working_hours_passed(msg.date.astimezone(), next_msg.date.astimezone(), settings.working_hours)
                     response_times.append(hours)
                     break
 
@@ -269,12 +269,12 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
             if unread_messages:
                 first_unread = unread_messages[-1]  # Самое старое непрочитанное
                 working_hours_passed = calculate_working_hours_passed(
-                    first_unread.date,
+                    first_unread.date.astimezone(),
                     current_time,
                     settings.working_hours
                 )
                 unread_info = (
-                    f"{chat_name} - {dialog.unread_count} непрочитанных, первое от {first_unread.date.strftime('%d.%m.%Y %H:%M')}",
+                    f"{chat_name} - {dialog.unread_count} непрочитанных, первое от {first_unread.date.astimezone().strftime('%d.%m.%Y %H:%M')}",
                     working_hours_passed,
                 )
                 logger.warning(f"Непрочитанные сообщения: {unread_info[0]}")
@@ -282,7 +282,7 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
         # Проверка неотвеченных сообщений
         if is_from_client:
             working_hours_passed = calculate_working_hours_passed(
-                last_message.date,
+                last_message.date.astimezone(),
                 current_time,
                 settings.working_hours
             )
@@ -291,7 +291,7 @@ async def analyze_chat(dialog, client: TelegramClient, current_time: datetime) -
 
             if not has_reaction:
                 unanswered_info = (
-                    f"{chat_name} - последнее сообщение от {last_message.date.strftime('%d.%m.%Y %H:%M')}",
+                    f"{chat_name} - последнее сообщение от {last_message.date.astimezone().strftime('%d.%m.%Y %H:%M')}",
                     working_hours_passed,
                 )
                 logger.warning(f"Неотвеченное сообщение: {unanswered_info[0]}")
@@ -310,7 +310,7 @@ async def send_leaderboard_response_report(client: TelegramClient, leaderboard: 
     Отправляет топ переписок по скорости ответа менеджера.
     """
     try:
-        now_str = datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')
+        now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
         lines: List[str] = []
         lines.append(
             f"🏆 ТОП-{settings.leaderboard_response_list_count} ПЕРЕПИСОК ПО СКОРОСТИ ОТВЕТА МЕНЕДЖЕРА\n"
@@ -345,8 +345,8 @@ async def monitor_chats():
     logger.info("Запуск мониторинга Telegram чатов")
     logger.info("=" * 80)
 
-    current_time = datetime.now(timezone.utc)
-    logger.info(f"Текущее время: {current_time.strftime('%d.%m.%Y %H:%M:%S')}")
+    current_time = datetime.now().astimezone()
+    logger.info(f"Текущее время: {current_time.strftime('%d.%m.%Y %H:%M:%S %Z')}")
 
     # # Проверка рабочих часов
     # if not is_working_hours(current_time, settings.working_hours):
@@ -475,11 +475,11 @@ async def send_report(client: TelegramClient, unread_list: List[Tuple[str, float
         # Формирование отчета
         report_lines: List[str] = []
         if not unread_list and not unanswered_list:
-            report_lines.append(f"✅ Сводка по чатам ({datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')})\n\n")
+            report_lines.append(f"✅ Сводка по чатам ({datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')})\n\n")
             report_lines.append("Все чаты обработаны. Проблем не обнаружено.")
             logger.info("Проблемных чатов не найдено")
         else:
-            report_lines.append(f"⚠️ Сводка по чатам ({datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')})\n\n")
+            report_lines.append(f"⚠️ Сводка по чатам ({datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')})\n\n")
 
             if unread_list:
                 report_lines.append(f"📬 НЕПРОЧИТАННЫЕ СООБЩЕНИЯ ({len(unread_list)}):\n")
