@@ -5,7 +5,7 @@ Telegram Monitor Script
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
     report_types: list[str] = ["unread", "unanswered"]
     leaderboard_response_list_count: int = 10
-    leaderboard_response_messages_count: int = 100
+    leaderboard_response_days: int = 7
 
     @field_validator("report_types", mode="before")
     @classmethod
@@ -217,12 +217,17 @@ async def calculate_chat_avg_response_time(dialog, client: TelegramClient, me) -
         entity = dialog.entity
         chat_name = format_chat_name(entity)
 
-        messages = await client.get_messages(entity, limit=settings.leaderboard_response_messages_count)
-        if not messages:
+        since = datetime.now(timezone.utc) - timedelta(days=settings.leaderboard_response_days)
+        messages_sorted = []
+        async for msg in client.iter_messages(entity):
+            if msg.date < since:
+                break
+            messages_sorted.append(msg)
+        if not messages_sorted:
             return None
 
         # Сортируем от старых к новым
-        messages_sorted = sorted(messages, key=lambda m: m.date)
+        messages_sorted.sort(key=lambda m: m.date)
 
         response_times: List[float] = []
         for i, msg in enumerate(messages_sorted):
@@ -380,7 +385,7 @@ async def send_leaderboard_report(client: TelegramClient, leaderboard: List[Tupl
         lines: List[str] = []
         lines.append(
             f"🏆 ТОП-{settings.leaderboard_response_list_count} ПЕРЕПИСОК ПО СКОРОСТИ ОТВЕТА МЕНЕДЖЕРА\n"
-            f"(за последние {settings.leaderboard_response_messages_count} сообщений, {now_str})\n\n"
+            f"(за последние {settings.leaderboard_response_days} дней, {now_str})\n\n"
         )
         if leaderboard:
             medals = ["🥇", "🥈", "🥉"]
