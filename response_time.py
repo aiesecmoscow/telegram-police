@@ -20,7 +20,26 @@ Business rules:
     dropped to avoid skewing the average.
 """
 
-from typing import List
+from typing import List, Tuple
+
+
+def filter_by_min_pairs(
+    leaderboard: List[Tuple[str, float, int]], min_pairs: int,
+) -> Tuple[List[Tuple[str, float, int]], int]:
+    """
+    Pure helper: drop chats with `pairs_count < min_pairs` from the leaderboard.
+
+    Returns (filtered_list, excluded_count). Exposed for unit-testing the
+    threshold logic without going through the Telegram client.
+    """
+    kept: List[Tuple[str, float, int]] = []
+    excluded = 0
+    for entry in leaderboard:
+        if entry[2] >= min_pairs:
+            kept.append(entry)
+        else:
+            excluded += 1
+    return kept, excluded
 
 
 def compute_response_times_hours(messages_sorted: list, manager_id: int) -> List[float]:

@@ -5,7 +5,7 @@ Telegram Monitor Script
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,7 +13,7 @@ from telethon import TelegramClient
 from telethon.tl.types import User, Chat, Channel, Message
 from loguru import logger
 
-from response_time import compute_response_times_hours
+from response_time import compute_response_times_hours, filter_by_min_pairs
 
 
 # ============================================================================
@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
     report_types: list[str] = ["unread", "unanswered"]
     leaderboard_response_list_count: int = 10
+    leaderboard_response_window_days: int = 7
+    leaderboard_min_pairs: int = 3
     leaderboard_response_messages_count: int = 100
 
     @field_validator("report_types", mode="before")
@@ -127,18 +129,25 @@ async def has_our_reaction(message: Message, client: TelegramClient) -> bool:
 # ОСНОВНАЯ ЛОГИКА
 # ============================================================================
 
-async def calculate_chat_avg_response_time(dialog, client: TelegramClient, me) -> Optional[Tuple[str, float]]:
+async def calculate_chat_avg_response_time(
+    dialog, client: TelegramClient, me, current_time: datetime,
+) -> Optional[Tuple[str, float, int]]:
     """
-    Считает среднее время ответа менеджера за последние N сообщений чата.
+    Считает среднее время ответа менеджера за окно `leaderboard_response_window_days`.
 
     Returns:
-        (chat_name, avg_hours) или None, если пар «вопрос→ответ» нет.
+        (chat_name, avg_hours, pairs_count) или None, если пар «вопрос→ответ» нет.
     """
     try:
         entity = dialog.entity
         chat_name = format_chat_name(entity)
 
-        messages = await client.get_messages(entity, limit=settings.leaderboard_response_messages_count)
+        window_start = current_time - timedelta(days=settings.leaderboard_response_window_days)
+        messages = await client.get_messages(
+            entity,
+            offset_date=window_start,
+            limit=settings.leaderboard_response_messages_count,
+        )
         if not messages:
             return None
 
@@ -149,7 +158,7 @@ async def calculate_chat_avg_response_time(dialog, client: TelegramClient, me) -
             return None
 
         avg_hours = sum(response_times) / len(response_times)
-        return (chat_name, avg_hours)
+        return (chat_name, avg_hours, len(response_times))
 
     except Exception as e:
         logger.error(f"Ошибка при расчёте времени ответа для {dialog.name}: {e}")
@@ -269,21 +278,28 @@ async def send_unanswered_report(client: TelegramClient, unanswered_list: List[T
         logger.error(f"Ошибка при отправке отчёта по неотвеченным: {e}", exc_info=True)
 
 
-async def send_leaderboard_report(client: TelegramClient, leaderboard: List[Tuple[str, float]]) -> None:
+async def send_leaderboard_report(client: TelegramClient, leaderboard: List[Tuple[str, float, int]]) -> None:
     try:
         now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
         lines: List[str] = []
         lines.append(
             f"🏆 ТОП-{settings.leaderboard_response_list_count} ПЕРЕПИСОК ПО СКОРОСТИ ОТВЕТА МЕНЕДЖЕРА\n"
-            f"(за последние {settings.leaderboard_response_messages_count} сообщений, {now_str})\n\n"
+            f"(окно: {settings.leaderboard_response_window_days} дн., "
+            f"мин. пар: {settings.leaderboard_min_pairs}, {now_str})\n\n"
         )
         if leaderboard:
             medals = ["🥇", "🥈", "🥉"]
-            for rank, (chat_name, avg_hours) in enumerate(leaderboard, start=1):
+            for rank, (chat_name, avg_hours, pairs_count) in enumerate(leaderboard, start=1):
                 icon = medals[rank - 1] if rank <= 3 else f"{rank}."
-                lines.append(f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)}\n")
+                lines.append(
+                    f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)} "
+                    f"({pairs_count} пар)\n"
+                )
         else:
-            lines.append("Недостаточно данных для формирования топа.")
+            lines.append(
+                f"Недостаточно данных: нет чатов с ≥{settings.leaderboard_min_pairs} пар "
+                f"«клиент→менеджер» за последние {settings.leaderboard_response_window_days} дн."
+            )
         await _send_chunks(client, lines, "Топ ответов")
     except Exception as e:
         logger.error(f"Ошибка при отправке топа ответов: {e}", exc_info=True)
@@ -322,7 +338,7 @@ async def monitor_chats():
 
         unread_list: List[Tuple[str, float]] = []
         unanswered_list: List[Tuple[str, float]] = []
-        leaderboard_list: List[Tuple[str, float]] = []
+        leaderboard_raw: List[Tuple[str, float, int]] = []
 
         checked_count = 0
 
@@ -345,9 +361,9 @@ async def monitor_chats():
                 continue
 
             if need_leaderboard:
-                result = await calculate_chat_avg_response_time(dialog, client, me)
+                result = await calculate_chat_avg_response_time(dialog, client, me, current_time)
                 if result is not None:
-                    leaderboard_list.append(result)
+                    leaderboard_raw.append(result)
 
             if need_chat_analysis:
                 unread_info, unanswered_info = await analyze_chat(dialog, client, current_time)
@@ -357,6 +373,17 @@ async def monitor_chats():
                     unanswered_list.append(unanswered_info)
 
             checked_count += 1
+
+        if need_leaderboard:
+            logger.warning(
+                "leaderboard: window=%d days, min_pairs=%d (replaces 'last %d messages')",
+                settings.leaderboard_response_window_days,
+                settings.leaderboard_min_pairs,
+                settings.leaderboard_response_messages_count,
+            )
+            leaderboard_list, excluded_by_min_pairs = filter_by_min_pairs(
+                leaderboard_raw, settings.leaderboard_min_pairs,
+            )
 
         logger.info(f"Проверено чатов: {checked_count}")
 
@@ -373,7 +400,11 @@ async def monitor_chats():
         if need_leaderboard:
             leaderboard_list.sort(key=lambda x: x[1])
             top = leaderboard_list[:settings.leaderboard_response_list_count]
-            logger.info(f"Топ переписок по скорости ответа: {len(top)} из {len(leaderboard_list)}")
+            logger.info(
+                f"Лидерборд: {len(leaderboard_list)} чатов прошли порог "
+                f"({excluded_by_min_pairs} исключено по мин. {settings.leaderboard_min_pairs} пар), "
+                f"в топ вошло {len(top)}"
+            )
             await send_leaderboard_report(client, top)
 
     except Exception as e:
