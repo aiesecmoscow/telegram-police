@@ -52,3 +52,5 @@ Thumbs.db
 # Конфигурация с реальными credentials (если будет создан отдельный файл)
 config.py
 .env
+
+.kilo/
