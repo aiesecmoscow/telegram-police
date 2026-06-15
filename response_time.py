@@ -23,16 +23,32 @@ Business rules:
 from typing import List, Tuple
 
 
+def count_total_messages(messages_sorted: list) -> int:
+    """
+    Pure helper: total message count in a chronologically-sorted list.
+
+    Used by the liveliness leaderboard to rank chats by activity volume.
+    "Живость диалога" = "сколько сообщений в окне" — captured here as a
+    single named function so the contract is explicit in the code, not
+    buried in a lambda at the call site.
+    """
+    return len(messages_sorted)
+
+
 def filter_by_min_pairs(
-    leaderboard: List[Tuple[str, float, int]], min_pairs: int,
-) -> Tuple[List[Tuple[str, float, int]], int]:
+    leaderboard: List[Tuple[str, float, int, int]], min_pairs: int,
+) -> Tuple[List[Tuple[str, float, int, int]], int]:
     """
     Pure helper: drop chats with `pairs_count < min_pairs` from the leaderboard.
+
+    Reads `pairs_count` from index 2 of each row. Works for the 4-tuple
+    `(name, avg_hours, pairs_count, total_messages)` returned by
+    `calculate_chat_avg_response_time`.
 
     Returns (filtered_list, excluded_count). Exposed for unit-testing the
     threshold logic without going through the Telegram client.
     """
-    kept: List[Tuple[str, float, int]] = []
+    kept: List[Tuple[str, float, int, int]] = []
     excluded = 0
     for entry in leaderboard:
         if entry[2] >= min_pairs:
