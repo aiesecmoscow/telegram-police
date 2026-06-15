@@ -241,7 +241,12 @@ async def _send_chunks(client: TelegramClient, lines: List[str], label: str) -> 
         chunks.append("".join(current))
 
     for index, chunk in enumerate(chunks, start=1):
-        await client.send_message(settings.report_to, chunk, comment=bool(settings.report_to_thread))
+        if settings.report_to_thread is not None:
+            await client.send_message(
+                settings.report_to, chunk, comment_to=settings.report_to_thread
+            )
+        else:
+            await client.send_message(settings.report_to, chunk)
         logger.info(f"{label} отправлен(а) {settings.report_to} (часть {index}/{len(chunks)})")
 
 
