@@ -58,6 +58,42 @@ def filter_by_min_pairs(
     return kept, excluded
 
 
+def take_anti_leaderboard(
+    leaderboard: List[Tuple[str, float, int, int]], n: int,
+) -> List[Tuple[str, float, int, int]]:
+    """
+    Pure helper: slice the anti-leaderboard (slowest responders) from the
+    SAME data the fastest leaderboard uses.
+
+    The fastest leaderboard ranks by `avg_hours` ASCENDING (lowest = best).
+    The anti-leaderboard is the mirror view: `avg_hours` DESCENDING
+    (highest = worst) so the bottom-N chats with the longest average
+    response time bubble to the top of the report.
+
+    Important contract details:
+
+    - The input is the *already filtered* list (post `filter_by_min_pairs`),
+      so the threshold is shared by both views.
+    - `float('inf')` rows (a manager who never replied) sort last, which
+      matches the slowest-of-slowest intuition; if `min_pairs=0` lets them
+      pass, they appear as the most unresponsive chats. The report renders
+      them as `∞` via `format_duration`.
+    - For ties on `avg_hours`, secondary sort is `pairs_count` DESCENDING
+      so a "slow but actively slow" chat outranks a "slow with 3 pairs"
+      chat (more pairs = stronger signal of a real slow pattern, not noise).
+    - Tertiary sort is `chat_name` ASCENDING for deterministic output.
+    - Returns at most `n` rows; never raises on empty input.
+
+    Exposed for unit-testing without going through the Telegram client.
+    """
+    if n <= 0 or not leaderboard:
+        return []
+    return sorted(
+        leaderboard,
+        key=lambda row: (-row[1], -row[2], row[0]),
+    )[:n]
+
+
 def compute_response_times_hours(messages_sorted: list, manager_id: int) -> List[float]:
     response_times: List[float] = []
     last_client_msg_date = None

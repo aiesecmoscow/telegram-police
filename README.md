@@ -9,8 +9,10 @@
 - **`unread`** — выявляет непрочитанные сообщения от клиентов
 - **`unanswered`** — выявляет неотвеченные сообщения (последнее сообщение в чате от клиента, без нашей реакции)
 - **`leaderboard`** — строит топ переписок по среднему времени ответа менеджера
+- **`liveliness`** — строит топ переписок по общему количеству сообщений в окне
+- **`antitop`** — строит антилидерборд: топ переписок с САМЫМ ДЛИННЫМ средним временем ответа (зеркало `leaderboard`)
 
-Режимы можно комбинировать, например `REPORT_TYPES=unread,unanswered` или `REPORT_TYPES=unread,unanswered,leaderboard`. Каждый включённый режим отправляется указанному пользователю отдельным сообщением (по умолчанию `@victorryakh`).
+Режимы можно комбинировать, например `REPORT_TYPES=unread,unanswered` или `REPORT_TYPES=unread,unanswered,leaderboard,antitop`. Каждый включённый режим отправляется указанному пользователю отдельным сообщением (по умолчанию `@victorryakh`).
 
 
 ## Бизнес-логика
@@ -162,10 +164,11 @@ crontab -e
 | `REPORT_TO` | | `@victorryakh` | Username получателя сводки |
 | `REPORT_TO_THREAD` | | — | ID треда (топика) в группе, куда слать сводку (если задан — используется `comment`) |
 | `EXCLUDED_CHATS` | | `["@PremiumBot","@SpamBot"]` | JSON-список исключённых чатов (см. ниже) |
-| `REPORT_TYPES` | | `unread,unanswered` | Список типов отчёта через запятую. Допустимые значения: `unread`, `unanswered`, `leaderboard`, `liveliness` |
+| `REPORT_TYPES` | | `unread,unanswered` | Список типов отчёта через запятую. Допустимые значения: `unread`, `unanswered`, `leaderboard`, `liveliness`, `antitop` |
 | `LEADERBOARD_RESPONSE_LIST_COUNT` | | `10` | Количество чатов в топе (для `leaderboard`) |
-| `LEADERBOARD_RESPONSE_WINDOW_DAYS` | | `7` | Окно анализа в днях (для `leaderboard`) |
-| `LEADERBOARD_MIN_PAIRS` | | `3` | Минимальное число пар «клиент→менеджер» для попадания чата в топ (для `leaderboard`) |
+| `LEADERBOARD_ANTI_LIST_COUNT` | | `10` | Количество чатов в антитопе (для `antitop`) |
+| `LEADERBOARD_RESPONSE_WINDOW_DAYS` | | `7` | Окно анализа в днях (для `leaderboard`, `liveliness`, `antitop`) |
+| `LEADERBOARD_MIN_PAIRS` | | `3` | Минимальное число пар «клиент→менеджер» для попадания чата в топ (для `leaderboard`, `liveliness`, `antitop`) |
 | `LEADERBOARD_RESPONSE_MESSAGES_COUNT` | | `100` | Legacy: не используется, выборка сообщений теперь ограничена только окном `LEADERBOARD_RESPONSE_WINDOW_DAYS`. Оставлено для обратной совместимости. |
 
 ### Примеры `EXCLUDED_CHATS`
@@ -276,6 +279,23 @@ EXCLUDED_CHATS=["@bot","Внутренний чат","-1001234567890"]
 ```
 
 Ранжирует чаты по общему количеству сообщений (входящие + исходящие) в окне `LEADERBOARD_RESPONSE_WINDOW_DAYS`. Применяется тот же порог `LEADERBOARD_MIN_PAIRS`, что и для скоростного лидерборда.
+
+### `antitop` — антилидерборд (самые медленные)
+
+Зеркало `leaderboard`: те же данные и фильтры (`LEADERBOARD_RESPONSE_WINDOW_DAYS`, `LEADERBOARD_MIN_PAIRS`), но сортировка по `avg_hours` по убыванию — сверху чаты с самым длинным средним временем ответа. Размер выдачи задаётся отдельной переменной `LEADERBOARD_ANTI_LIST_COUNT` (по умолчанию `10`).
+
+```text
+🐌 АНТИЛИДЕРБОРД: ТОП-10 САМЫХ МЕДЛЕННЫХ ПЕРЕПИСОК
+(окно: 7 дн., мин. пар: 3, 07.05.2026 12:00)
+
+🐌 @client1 (Иван Иванов) — ср. ответ: 2д 4ч (5 пар)
+🪨 @client2 (Петр Петров) — ср. ответ: 1д 6ч (4 пар)
+🦥 @client3 (Мария Сидорова) — ср. ответ: 18ч (7 пар)
+4. @client4 (Анна Кузнецова) — ср. ответ: 9ч 12м (3 пар)
+...
+```
+
+Если ни в одном чате не набралось ни одной пары, отправляется сообщение `Недостаточно данных: нет чатов с ≥N пар «клиент→менеджер» за последние M дн.`
 
 ## Структура проекта
 

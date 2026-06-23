@@ -13,14 +13,19 @@ from telethon import TelegramClient
 from telethon.tl.types import User, Chat, Channel, Message
 from loguru import logger
 
-from response_time import compute_response_times_hours, count_total_messages, filter_by_min_pairs
+from response_time import (
+    compute_response_times_hours,
+    count_total_messages,
+    filter_by_min_pairs,
+    take_anti_leaderboard,
+)
 
 
 # ============================================================================
 # КОНФИГУРАЦИЯ
 # ============================================================================
 
-VALID_REPORT_TYPES = {"unread", "unanswered", "leaderboard", "liveliness"}
+VALID_REPORT_TYPES = {"unread", "unanswered", "leaderboard", "liveliness", "antitop"}
 
 
 class Settings(BaseSettings):
@@ -34,6 +39,7 @@ class Settings(BaseSettings):
     excluded_chats: list[str] = ["@PremiumBot", "@SpamBot"]
     report_types: list[str] = ["unread", "unanswered"]
     leaderboard_response_list_count: int = 10
+    leaderboard_anti_list_count: int = 10
     leaderboard_response_window_days: int = 7
     leaderboard_min_pairs: int = 3
     leaderboard_response_messages_count: int = 100
@@ -317,6 +323,43 @@ async def send_leaderboard_report(client: TelegramClient, leaderboard: List[Tupl
         logger.error(f"Ошибка при отправке топа ответов: {e}", exc_info=True)
 
 
+async def send_anti_leaderboard_report(client: TelegramClient, anti_leaderboard: List[Tuple[str, float, int, int]]) -> None:
+    """
+    Отправляет анти-лидерборд — чаты с самым ДЛИННЫМ средним временем ответа
+    (самые медленные менеджеры) за то же окно и с тем же порогом пар, что и
+    обычный лидерборд. Зеркальный вид: данные и фильтры те же, сортировка
+    и направление «хорошести» — противоположные.
+
+    Формат вывода повторяет `send_leaderboard_report`, чтобы их было удобно
+    сравнивать глазами; визуально отличается эмодзи 🐌 (anti-leaderboard) и
+    явным словом «АНТИЛИДЕРБОРД» в заголовке.
+    """
+    try:
+        now_str = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
+        lines: List[str] = []
+        lines.append(
+            f"🐌 АНТИЛИДЕРБОРД: ТОП-{settings.leaderboard_anti_list_count} САМЫХ МЕДЛЕННЫХ ПЕРЕПИСОК\n"
+            f"(окно: {settings.leaderboard_response_window_days} дн., "
+            f"мин. пар: {settings.leaderboard_min_pairs}, {now_str})\n\n"
+        )
+        if anti_leaderboard:
+            medals = ["🐌", "🪨", "🦥"]
+            for rank, (chat_name, avg_hours, pairs_count) in enumerate(anti_leaderboard, start=1):
+                icon = medals[rank - 1] if rank <= 3 else f"{rank}."
+                lines.append(
+                    f"{icon} {chat_name} — ср. ответ: {format_duration(avg_hours)} "
+                    f"({pairs_count} пар)\n"
+                )
+        else:
+            lines.append(
+                f"Недостаточно данных: нет чатов с ≥{settings.leaderboard_min_pairs} пар "
+                f"«клиент→менеджер» за последние {settings.leaderboard_response_window_days} дн."
+            )
+        await _send_chunks(client, lines, "Антилидерборд (самые медленные)")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке антилидерборда: {e}", exc_info=True)
+
+
 async def send_liveliness_report(
     client: TelegramClient, liveliness: List[Tuple[str, float, int, int]],
 ) -> None:
@@ -373,7 +416,8 @@ async def monitor_chats():
         need_unanswered = "unanswered" in settings.report_types
         need_leaderboard = "leaderboard" in settings.report_types
         need_liveliness = "liveliness" in settings.report_types
-        need_any_leaderboard = need_leaderboard or need_liveliness
+        need_anti = "antitop" in settings.report_types
+        need_any_leaderboard = need_leaderboard or need_liveliness or need_anti
         need_chat_analysis = need_unread or need_unanswered
 
         unread_list: List[Tuple[str, float]] = []
@@ -459,6 +503,16 @@ async def monitor_chats():
                 f"в топ вошло {len(top_liveliness)}"
             )
             await send_liveliness_report(client, top_liveliness)
+
+        if need_anti:
+            anti_top = take_anti_leaderboard(
+                leaderboard_list, settings.leaderboard_anti_list_count,
+            )
+            logger.info(
+                f"Антилидерборд: {len(leaderboard_list)} чатов прошли порог, "
+                f"в топ вошло {len(anti_top)}"
+            )
+            await send_anti_leaderboard_report(client, anti_top)
 
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
